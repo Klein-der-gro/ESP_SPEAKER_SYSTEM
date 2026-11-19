@@ -1,0 +1,18 @@
+# ESP-IDF generated build output
+build/
+**/build/
+
+# Local ESP-IDF configuration (keep sdkconfig.defaults)
+sdkconfig
+sdkconfig.old
+**/sdkconfig
+**/sdkconfig.old
+
+# Editor and Python-generated files
+.vscode/.browse.VC.db
+__pycache__/
+*.py[cod]
+
+# Local editor configuration
+**/.vscode/
+**/.clangd
