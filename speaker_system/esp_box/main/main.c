@@ -157,9 +157,12 @@ static esp_err_t wifi_start(void)
                         "station config failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG,
                         "Wi-Fi power-save disable failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_max_tx_power(78), TAG,
-                        "Wi-Fi TX power setup failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "station start failed");
+    esp_err_t tx_power_err = esp_wifi_set_max_tx_power(78);
+    if (tx_power_err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi TX power setup failed after station start: %s; "
+                 "using driver default", esp_err_to_name(tx_power_err));
+    }
     if (xTaskCreate(wifi_retry_task, "box_wifi_retry", 3072, NULL, 3,
                     NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;

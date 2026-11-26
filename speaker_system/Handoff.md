@@ -83,6 +83,8 @@ validation, and keep the unverified items explicit.
 - [`tools/udp_listener.py`](tools/udp_listener.py) — optional PC packet
   monitor when connected to the hub WLAN.
 - [`README.md`](README.md) — wiring, safety, flash order, and troubleshooting.
+- [`speaker_system.code-workspace`](speaker_system.code-workspace) — VS Code
+  workspace containing the three independent ESP-IDF projects.
 
 The previously tagged path
 `speaker_system/esp_a_bluetooth/esp_b_wifi_hub/main/main.c` does not exist.
@@ -111,10 +113,15 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 - ESP A, ESP B, and speaker-box projects each built successfully with ESP-IDF
   6.1.
+- ESP B and speaker-box projects rebuilt successfully after moving Wi-Fi
+  maximum TX-power configuration until after `esp_wifi_start()`.
 - `tools/udp_listener.py` passed Python syntax parsing and its `--help` check.
 - `git diff --check` completed without whitespace errors.
 - Pin assignments and protocol constants in this handoff were checked against
   the current firmware source.
+- The multi-project VS Code workspace JSON was parsed, and all three listed
+  project folders were confirmed to contain a `CMakeLists.txt`; no build was
+  run from the new workspace.
 
 ## Not yet verified
 
@@ -140,3 +147,8 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 - **2026-11-26:** Added the source-verified pin map, protocol/network constants,
   signal routing and safety reminders, and Git generated-file staging guidance.
+- **2026-11-26:** Added a multi-project VS Code workspace so ESP-IDF builds use
+  an actual project directory rather than the parent repository folder.
+- **2026-11-26:** Fixed ESP-IDF Wi-Fi TX-power setup ordering in ESP B and box
+  firmware. The API requires Wi-Fi to be started first; if optional TX-power
+  tuning still fails, firmware logs a warning and continues at driver default.

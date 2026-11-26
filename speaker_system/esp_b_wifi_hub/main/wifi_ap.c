@@ -58,9 +58,12 @@ esp_err_t hub_wifi_start(void)
                         "AP config failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG,
                         "Wi-Fi power-save disable failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_max_tx_power(78), TAG,
-                        "Wi-Fi TX power setup failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "AP start failed");
+    esp_err_t tx_power_err = esp_wifi_set_max_tx_power(78);
+    if (tx_power_err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi TX power setup failed after AP start: %s; "
+                 "using driver default", esp_err_to_name(tx_power_err));
+    }
 
     ESP_LOGI(TAG, "AP up: SSID=%s channel=%u IP=192.168.4.1 country=%s",
              PROTOCOL_WIFI_SSID, PROTOCOL_WIFI_CHANNEL,

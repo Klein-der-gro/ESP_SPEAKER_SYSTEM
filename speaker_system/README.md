@@ -64,10 +64,13 @@ specified limit.
 Build, flash, and monitor each project independently. The same box binary is
 used for both speakers.
 
-1. Open `esp_a_bluetooth` in VS Code, select the board's COM port, and use
-   **Build, Flash and Monitor**.
-2. Open `esp_b_wifi_hub`, select ESP B's COM port, and flash/monitor.
-3. Open `esp_box`, select the LEFT box's COM port, and flash/monitor.
+1. Open `speaker_system.code-workspace` in VS Code. It contains all three
+   ESP-IDF projects; the ESP-IDF extension's current project must be the
+   project being built. Select ESP A (`esp_a_bluetooth`) from the status bar
+   or with **ESP-IDF: Pick a Workspace Folder**, select the board's COM port,
+   and use **Build, Flash and Monitor**.
+2. Select `esp_b_wifi_hub`, select ESP B's COM port, and flash/monitor.
+3. Select `esp_box`, select the LEFT box's COM port, and flash/monitor.
 4. Repeat step 3 for the RIGHT box, with GPIO 27 connected to GND.
 5. Power all four devices. ESP B should advertise `SPEAKER-NET`; both boxes
    should connect and register without manual IP configuration.

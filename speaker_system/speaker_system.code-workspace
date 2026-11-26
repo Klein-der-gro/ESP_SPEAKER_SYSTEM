@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "path": "esp_a_bluetooth"
+        },
+        {
+            "path": "esp_b_wifi_hub"
+        },
+        {
+            "path": "esp_box"
+        }
+    ]
+}
