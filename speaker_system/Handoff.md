@@ -4,6 +4,28 @@
 **Project:** Four-board ESP32 Bluetooth and multiroom speaker system  
 **Status:** Firmware implementation builds; hardware integration is not yet verified.
 
+## Physical pin map
+
+| Board | GPIO | Connect to / function |
+|---|---:|---|
+| ESP A | 18 | I2S BCLK to PCM5102 and ESP B |
+| ESP A | 19 | I2S WS/LCK to PCM5102 and ESP B |
+| ESP A | 23 | I2S data out to PCM5102 DIN and ESP B DIN |
+| ESP A | 17 | UART2 TX -> ESP B GPIO 16 RX |
+| ESP A | 21 | OLED SDA |
+| ESP A | 22 | OLED SCL |
+| ESP A | 33 / 27 / 14 | Encoder 1 CLK / DT / switch |
+| ESP A | 32 / 25 / 26 | Encoder 2 CLK / DT / switch |
+| ESP B | 18 / 19 / 23 | I2S BCLK / WS / data in from ESP A |
+| ESP B | 16 | UART2 RX from ESP A GPIO 17 |
+| Each box | 18 / 19 / 23 | I2S BCLK / WS / data out to PCM5102 |
+| Each box | 27 | Role select: open = LEFT; connect to GND = RIGHT |
+
+Use a common ground between ESP A and ESP B. ESP A is the I2S clock master;
+ESP B is the I2S slave receiver. Each speaker box is an I2S master for its
+DAC. The firmware uses 16-bit stereo I2S. Check the actual board pinout before
+wiring; some ESP32 modules reserve GPIO 16/17 for PSRAM. Keep I2S leads short.
+
 ## Update rule
 
 Whenever project code, configuration, or documentation changes, update this
@@ -22,6 +44,28 @@ validation, and keep the unverified items explicit.
   crossover, and output to their DACs.
 - One box firmware image is used for both roles. GPIO 27 open selects LEFT;
   connect GPIO 27 to GND for RIGHT.
+
+## Important firmware settings
+
+- Shared definitions are in `common/protocol/include/protocol.h`.
+- Firmware label/version: `MR-M0.2` / protocol version `2`.
+- ESP B access point: SSID `SPEAKER-NET`, example password
+  `change-me-1234`, channel 1, hub address `192.168.4.1`, country `AT`.
+  The password is public example text, not a secret.
+- ESP A -> ESP B UART2 runs at 115200 baud. Frames start with `0xA5`, carry
+  type/length/payload, and end with CRC-8 (polynomial `0x07`). Sample-rate
+  payloads are 4 bytes; DSP-parameter payloads are 18 bytes.
+- Audio is 16-bit stereo, 256 frames per packet. Each UDP audio datagram is
+  1056 bytes total (32-byte header plus 1024-byte PCM payload). Audio uses
+  UDP port 5004; box registration and clock sync use UDP port 5005.
+- The hub uses a 120 ms box playout delay. Boxes send registration heartbeats
+  and clock-sync requests automatically; no static IP configuration is
+  needed.
+- `DSP_ON_HUB` is enabled: ESP A sends raw audio and controls, ESP B does the
+  shared DSP/limiting, and boxes do channel selection plus crossover.
+- Box crossover is LR4 at 2500 Hz. DAC left is the high-frequency output;
+  DAC right is the low-frequency output. Confirm the crossover against the
+  actual drivers before connecting amplifiers.
 
 ## Key files
 
@@ -58,6 +102,10 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 - Box crossover defaults to 2500 Hz LR4. Verify it against the actual drivers
   and amplifiers before connecting speaker hardware.
 - Wiring and complete flash directions are in [`README.md`](README.md).
+- The repository [`.gitignore`](../.gitignore) excludes generated `build/`
+  directories, local `sdkconfig` files, and `.vscode/` settings. If any were
+  staged before being ignored, unstage them before committing; ignore rules do
+  not remove already-staged files.
 
 ## Verification completed
 
@@ -65,6 +113,8 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
   6.1.
 - `tools/udp_listener.py` passed Python syntax parsing and its `--help` check.
 - `git diff --check` completed without whitespace errors.
+- Pin assignments and protocol constants in this handoff were checked against
+  the current firmware source.
 
 ## Not yet verified
 
@@ -85,3 +135,8 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
    startup, box registration, and incoming audio packets.
 4. Test playback at low amplifier gain only after confirming the crossover
    against the driver datasheets. Record hardware results here.
+
+## Handoff update log
+
+- **2026-11-26:** Added the source-verified pin map, protocol/network constants,
+  signal routing and safety reminders, and Git generated-file staging guidance.
