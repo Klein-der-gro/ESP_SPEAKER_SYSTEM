@@ -275,6 +275,13 @@ void dsp_init(uint32_t sample_rate)
     s_dsp.vocal_eq = identity_coefficients();
 }
 
+void dsp_init_muted(uint32_t sample_rate)
+{
+    dsp_init(sample_rate);
+    s_dsp.target_mute_gain = 0.0f;
+    s_dsp.mute_gain = 0.0f;
+}
+
 void dsp_set_params(float bass_db, float treble_db, float vocal_db,
                     int balance, int volume, bool muted, int vocal_mode)
 {
@@ -330,22 +337,14 @@ void dsp_process(int16_t *stereo, size_t frames)
         s_dsp.coefficient_vocal_db = s_dsp.vocal_db;
     }
 
-    float maximum_positive_db = s_dsp.bass_db;
-    if (s_dsp.treble_db > maximum_positive_db) {
-        maximum_positive_db = s_dsp.treble_db;
-    }
-    if (s_dsp.vocal_db > maximum_positive_db) {
-        maximum_positive_db = s_dsp.vocal_db;
-    }
-    if (maximum_positive_db < 0.0f) maximum_positive_db = 0.0f;
-    float pre_gain = powf(10.0f, -maximum_positive_db / 40.0f);
     size_t lookahead_index = s_dsp.lookahead_index;
     size_t delay = s_dsp.lookahead_frames;
     const float threshold = LIMITER_THRESHOLD;
 
     for (size_t frame = 0; frame < frames; frame++) {
-        float left = (float)stereo[frame * 2U] * pre_gain;
-        float right = (float)stereo[frame * 2U + 1U] * pre_gain;
+        /* Let the limiter handle real peaks instead of attenuating the whole mix. */
+        float left = (float)stereo[frame * 2U];
+        float right = (float)stereo[frame * 2U + 1U];
         left = biquad_process(&s_dsp.bass_state[0], &s_dsp.bass_eq, left);
         right = biquad_process(&s_dsp.bass_state[1], &s_dsp.bass_eq, right);
         left = biquad_process(&s_dsp.treble_state[0], &s_dsp.treble_eq, left);

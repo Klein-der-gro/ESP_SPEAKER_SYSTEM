@@ -1,15 +1,29 @@
-# ESP B - Wi-Fi hub (M0 skeleton)
+# ESP B - Wi-Fi and DSP hub
 
-This milestone only verifies the independent ESP-IDF project and boot message. The SoftAP, I2S receiver, UART rate receiver, UDP audio, and control protocol are later milestones.
+ESP B receives raw stereo I2S and UART2 control frames from ESP A, runs shared
+DSP, starts the `SPEAKER-NET` access point, and sends audio to registered
+speaker boxes by unicast UDP.
 
-## Wiring
+## Connections
 
-For M0, connect only USB power. When the UART/I2S milestones are implemented, connect ESP A BCK GPIO 18 to ESP B GPIO 18, WS GPIO 19 to GPIO 19, data GPIO 23 to GPIO 23, UART2 RX GPIO 16 to ESP A TX GPIO 17, and common ground. Keep the I2S wires short.
+- ESP A BCLK GPIO 18 -> GPIO 18; WS GPIO 19 -> GPIO 19; data GPIO 23 -> GPIO
+  23; GND -> GND.
+- ESP A UART2 TX GPIO 17 -> ESP B RX GPIO 16 (115200 baud); connect GND.
+- Keep I2S wires short. GPIO 16 may not be available on modules that use it
+  for PSRAM.
+
+## Network
+
+Default settings are SSID `SPEAKER-NET`, password `change-me-1234`, channel
+1, and hub address `192.168.4.1`. The password is a public example, not a
+personal credential. Change shared settings in
+`../common/protocol/include/protocol.h` and rebuild ESP B and both boxes
+together.
 
 ## Build and flash
 
-Open this folder as the ESP-IDF project, select the ESP32 target and this ESP's COM port, then run `idf.py build` and `idf.py -p PORT flash monitor`.
-
-## Expected serial output
-
-`WIFI_HUB: ESP B Wi-Fi hub ready (milestone M0), firmware: MR-M0.2`
+Open this folder as its own ESP-IDF project, select ESP32 and ESP B's COM
+port, then run **Build, Flash and Monitor**. Verify `AP up`,
+`I2S slave RX ready`, and both box registrations in the monitor. See
+[`../README.md`](../README.md) for the full power-up sequence and safety
+notes.

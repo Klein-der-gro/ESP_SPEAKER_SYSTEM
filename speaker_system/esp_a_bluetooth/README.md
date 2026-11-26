@@ -1,17 +1,23 @@
-# ESP A - Bluetooth speaker
+# ESP A - Bluetooth source
 
-This is the existing Bluetooth/DSP/OLED/encoder firmware with the UART2 sample-rate link added. Its A2DP-to-I2S audio path and existing DAC remain unchanged.
+ESP A handles Bluetooth A2DP/AVRCP, the OLED, encoders, playback controls, and
+the visualizer. In hub-DSP mode it sends raw stereo I2S to ESP B and forwards
+sample-rate and DSP-control updates over UART2.
 
-## Wiring
+## Connections
 
-Keep the existing PCM5102, encoder, and OLED wiring unchanged. Connect ESP A GPIO 17 (UART2 TX) to ESP B GPIO 16 (UART2 RX), and connect the ESP A and ESP B grounds. ESP A should use a WROOM module; GPIO 16/17 can be occupied by PSRAM on some WROVER modules.
+- PCM5102 BCLK/LCK/DIN: GPIO 18/19/23.
+- OLED SDA/SCL: GPIO 21/22.
+- ESP A -> ESP B: I2S GPIO 18/19/23 and GND; UART2 TX GPIO 17 -> ESP B RX
+  GPIO 16, 115200 baud.
+- Disconnect the ESP A DAC amplifier while using hub-DSP mode. ESP A's DAC
+  receives raw, unprocessed audio.
 
-## Build and flash
+## Build, flash, and monitor
 
-Open this folder as the ESP-IDF project, select the ESP32 target and the correct COM port, then run `idf.py build` and `idf.py -p PORT flash monitor` (or use the VS Code ESP-IDF build/flash controls).
+Open this folder as its own ESP-IDF project. Select ESP32, the board's COM
+port, then run **Build, Flash and Monitor**. At startup expect
+`firmware: MR-M0.2` and `UART2 rate link ready`.
 
-## Expected serial output
-
-The existing Bluetooth and OLED logs should appear, plus `LINK_TX: UART2 rate link ready`. ESP A sends 44100 Hz at startup, sends changes when the A2DP sample rate changes, and repeats the latest rate once per second.
-
-The last OLED page displays the firmware build name. Edit `FIRMWARE_VERSION_NAME` in `../common/protocol/include/protocol.h` to change it for ESP A and ESP B.
+The audio and DSP handoff requires ESP B to be running. Flash all device
+projects as described in [`../README.md`](../README.md).

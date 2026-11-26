@@ -131,6 +131,8 @@ static StreamBufferHandle_t s_stream;
 static i2s_chan_handle_t s_tx_chan;
 static volatile uint32_t s_pending_rate = 0;   /* neue Samplerate, wird im I2S-Task gesetzt */
 static volatile uint32_t s_sample_rate = 44100;
+static bool s_link_tx_ready;
+static bool s_link_tx_error_logged;
 static volatile int      s_volume = VOLUME_START;
 static volatile int      s_bass_boost;
 static volatile int      s_treble_boost;
@@ -576,8 +578,9 @@ static void i2s_task(void *arg)
             i2s_channel_reconfig_std_clock(s_tx_chan, &clk_cfg);
             i2s_channel_enable(s_tx_chan);
             s_sample_rate = rate;
-            esp_err_t link_err = link_tx_send_rate(rate);
-            if (link_err != ESP_OK) {
+            esp_err_t link_err = s_link_tx_ready
+                ? link_tx_send_rate(rate) : ESP_ERR_INVALID_STATE;
+            if (s_link_tx_ready && link_err != ESP_OK) {
                 ESP_LOGE(TAG, "Sample rate could not be sent to ESP B: %s",
                          esp_err_to_name(link_err));
             }
@@ -679,11 +682,31 @@ static void i2s_task(void *arg)
             portEXIT_CRITICAL(&s_visualizer_mux);
         }
 
-        dsp_set_params(s_bass_boost * BASS_EQ_DB_PER_CONTROL_UNIT,
-                       s_treble_boost * EQ_DB_PER_CONTROL_UNIT,
-                       s_vocal_boost * EQ_DB_PER_CONTROL_UNIT,
-                       s_balance, s_volume, s_muted, s_vocal_mode);
+        protocol_dsp_params_t dsp_params = {
+            .bass_db = s_bass_boost * BASS_EQ_DB_PER_CONTROL_UNIT,
+            .treble_db = s_treble_boost * EQ_DB_PER_CONTROL_UNIT,
+            .vocal_db = s_vocal_boost * EQ_DB_PER_CONTROL_UNIT,
+            .balance = (int16_t)s_balance,
+            .volume = (int16_t)s_volume,
+            .muted = s_muted ? 1U : 0U,
+            .vocal_mode = (uint8_t)s_vocal_mode,
+        };
+#if DSP_ON_HUB
+        if (s_link_tx_ready) {
+            esp_err_t params_err = link_tx_send_dsp_params(&dsp_params);
+            if (params_err != ESP_OK && !s_link_tx_error_logged) {
+                ESP_LOGE(TAG, "DSP parameters could not be sent to ESP B: %s",
+                         esp_err_to_name(params_err));
+                s_link_tx_error_logged = true;
+            }
+        }
+#else
+        dsp_set_params(dsp_params.bass_db, dsp_params.treble_db,
+                       dsp_params.vocal_db, dsp_params.balance,
+                       dsp_params.volume, dsp_params.muted != 0U,
+                       dsp_params.vocal_mode);
         dsp_process(s, frames);
+#endif
 
         uint64_t vu_sums[2] = {0};
         for (size_t frame = 0; frame < frames; frame++) {
@@ -2140,7 +2163,8 @@ static void encoder_task(void *arg)
 void app_main(void)
 {
     /* Create shared buffers/tasks first, then bring up audio, controls, and Bluetooth. */
-    ESP_LOGI(TAG, "ESP A Bluetooth speaker ready (milestone M0)");
+    ESP_LOGI(TAG, "ESP A Bluetooth speaker ready, firmware: %s",
+             FIRMWARE_VERSION_NAME);
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -2155,8 +2179,15 @@ void app_main(void)
     s_meta_mutex = xSemaphoreCreateMutex();
     assert(s_meta_mutex);
 
-    ESP_ERROR_CHECK(link_tx_init());
-    ESP_ERROR_CHECK(link_tx_send_rate(s_sample_rate));
+    esp_err_t link_err = link_tx_init();
+    if (link_err == ESP_OK) {
+        s_link_tx_ready = true;
+        link_err = link_tx_send_rate(s_sample_rate);
+    }
+    if (link_err != ESP_OK) {
+        ESP_LOGE(TAG, "UART link to ESP B unavailable: %s",
+                 esp_err_to_name(link_err));
+    }
     i2s_init();
     xTaskCreatePinnedToCore(i2s_task, "i2s_task", 4096, NULL, 6,
                             &s_i2s_task_handle, 1);

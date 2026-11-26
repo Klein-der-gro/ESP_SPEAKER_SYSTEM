@@ -1,17 +1,25 @@
-# ESP box - LEFT/RIGHT firmware (M0 skeleton)
+# Speaker box - LEFT/RIGHT firmware
 
-One firmware selects its role at boot using GPIO 27. Leaving GPIO 27 open (internal pull-up) selects LEFT; connecting GPIO 27 to GND selects RIGHT. M0 only verifies role detection and boot.
+The same binary is flashed to both boxes. GPIO 27 open (internal pull-up)
+selects LEFT; connect GPIO 27 to GND on the RIGHT box.
 
-## Wiring
+## Connections
 
-For M0, connect USB power and optionally the role jumper. Later milestones use PCM5102 BCK GPIO 18, LCK GPIO 19, DIN GPIO 23, and the DAC power/ground. Common ground is required. The DAC outputs will feed separate high- and low-frequency amplifier channels after crossover implementation.
+- PCM5102 BCLK/LCK/DIN: GPIO 18/19/23.
+- GPIO 27: leave open for LEFT; connect to GND for RIGHT.
+- DAC left output is the high-frequency crossover output; DAC right is the
+  low-frequency output. Connect each to its separate amplifier input.
+- Use a stable supply and common signal ground. Check PCM5102 board strap
+  requirements before powering it.
+
+The firmware uses a 2500 Hz Linkwitz-Riley fourth-order crossover, with a
+1500 Hz lower bound. Verify that crossover frequency against the actual
+tweeter and driver specifications before connecting an amplifier.
 
 ## Build and flash
 
-Open this folder as the ESP-IDF project, select the ESP32 target and this box's COM port, then run `idf.py build` and `idf.py -p PORT flash monitor`.
-
-## Expected serial output
-
-With GPIO 27 open: `ESP_BOX: ESP box ready (milestone M0), role: LEFT`.
-
-With GPIO 27 connected to GND: the same line reports `RIGHT`.
+Open this folder as its own ESP-IDF project, select ESP32 and the box's COM
+port, then run **Build, Flash and Monitor**. Expect `Speaker box ready` with
+the selected role, then Wi-Fi connection and hub registration messages.
+Repeat the flash for the second box with GPIO 27 grounded. Full system steps
+and known hardware-validation limits are in [`../README.md`](../README.md).
