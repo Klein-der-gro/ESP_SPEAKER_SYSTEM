@@ -20,6 +20,10 @@ tweeter and driver specifications before connecting an amplifier.
 
 Open this folder as its own ESP-IDF project, select ESP32 and the box's COM
 port, then run **Build, Flash and Monitor**. Expect `Speaker box ready` with
-the selected role, then Wi-Fi connection and hub registration messages.
+the selected role, followed by the station-joining log for `SPEAKER-NET`, an
+assigned IP, and hub registration. A `NO_AP_FOUND` reason
+means ESP B's AP wasn't found; an authentication failure points to a password
+mismatch. The `enable tsf doesnt work` Wi-Fi driver line by itself is not a
+failed connection.
 Repeat the flash for the second box with GPIO 27 grounded. Full system steps
 and known hardware-validation limits are in [`../README.md`](../README.md).

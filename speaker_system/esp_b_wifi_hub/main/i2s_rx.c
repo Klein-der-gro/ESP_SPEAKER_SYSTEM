@@ -24,6 +24,34 @@ static const char *TAG = "HUB_I2S";
 static i2s_chan_handle_t s_rx_channel;
 static TaskHandle_t s_i2s_task;
 
+typedef struct {
+    uint32_t avg_abs;
+    uint32_t peak;
+} pcm_level_t;
+
+typedef struct {
+    bool have_params;
+    bool stale;
+    bool muted;
+    int volume;
+} dsp_status_t;
+
+static pcm_level_t measure_pcm(const int16_t *samples, size_t count)
+{
+    pcm_level_t level = {0};
+    if (count == 0U) return level;
+
+    uint64_t abs_sum = 0U;
+    for (size_t i = 0; i < count; i++) {
+        int32_t sample = samples[i];
+        uint32_t magnitude = (uint32_t)(sample < 0 ? -sample : sample);
+        abs_sum += magnitude;
+        if (magnitude > level.peak) level.peak = magnitude;
+    }
+    level.avg_abs = (uint32_t)(abs_sum / count);
+    return level;
+}
+
 static esp_err_t configure_rx(uint32_t sample_rate)
 {
     i2s_chan_config_t channel_config =
@@ -55,14 +83,20 @@ static esp_err_t configure_rx(uint32_t sample_rate)
     return i2s_channel_enable(s_rx_channel);
 }
 
-static void apply_dsp(int16_t *samples, size_t frames, uint32_t sample_rate)
+static dsp_status_t apply_dsp(int16_t *samples, size_t frames,
+                              uint32_t sample_rate)
 {
+    dsp_status_t status = {0};
 #if DSP_ON_HUB
     protocol_dsp_params_t params = {0};
     int64_t last_seen_us = 0;
     bool have_params = hub_get_dsp_params(&params, &last_seen_us);
     bool stale = !have_params ||
                  esp_timer_get_time() - last_seen_us > DSP_STALE_TIMEOUT_US;
+    status.have_params = have_params;
+    status.stale = stale;
+    status.muted = params.muted != 0U;
+    status.volume = params.volume;
     dsp_set_params(params.bass_db, params.treble_db, params.vocal_db,
                    params.balance, params.volume,
                    stale || params.muted != 0U, params.vocal_mode);
@@ -103,6 +137,7 @@ static void apply_dsp(int16_t *samples, size_t frames, uint32_t sample_rate)
     (void)frames;
     (void)sample_rate;
 #endif
+    return status;
 }
 
 static void i2s_rx_task(void *arg)
@@ -113,6 +148,13 @@ static void i2s_rx_task(void *arg)
     uint64_t frame_index = 0U;
     int64_t silence_start_us = 0;
     int64_t last_timeout_log_us = 0;
+    int64_t level_window_start_us = 0;
+    uint64_t input_avg_abs_sum = 0U;
+    uint64_t output_avg_abs_sum = 0U;
+    uint32_t input_peak = 0U;
+    uint32_t output_peak = 0U;
+    uint32_t level_chunks = 0U;
+    dsp_status_t current_dsp_status = {0};
 #if DSP_ON_HUB
     dsp_init_muted(rate);
 #endif
@@ -181,6 +223,8 @@ static void i2s_rx_task(void *arg)
 
         hub_audio_chunk_t chunk = {0};
         memcpy(chunk.samples, raw, sizeof(raw));
+        pcm_level_t input_level =
+            measure_pcm(chunk.samples, HUB_CHUNK_FRAMES * 2U);
         int64_t read_time_us = esp_timer_get_time();
         chunk.hub_time_us = read_time_us -
             (int64_t)(((uint64_t)HUB_CHUNK_FRAMES * 1000000U) / rate);
@@ -205,7 +249,34 @@ static void i2s_rx_task(void *arg)
             silence_start_us = 0;
         }
 
-        apply_dsp(chunk.samples, HUB_CHUNK_FRAMES, rate);
+        current_dsp_status = apply_dsp(chunk.samples, HUB_CHUNK_FRAMES, rate);
+        pcm_level_t output_level =
+            measure_pcm(chunk.samples, HUB_CHUNK_FRAMES * 2U);
+        input_avg_abs_sum += input_level.avg_abs;
+        output_avg_abs_sum += output_level.avg_abs;
+        if (input_level.peak > input_peak) input_peak = input_level.peak;
+        if (output_level.peak > output_peak) output_peak = output_level.peak;
+        level_chunks++;
+        if (level_window_start_us == 0) level_window_start_us = read_time_us;
+        if (read_time_us - level_window_start_us >= 1000000LL) {
+            ESP_LOGI(TAG, "PCM input avg_abs=%lu peak=%lu post_dsp "
+                     "avg_abs=%lu peak=%lu params=%u stale=%u muted=%u "
+                     "volume=%d",
+                     (unsigned long)(input_avg_abs_sum / level_chunks),
+                     (unsigned long)input_peak,
+                     (unsigned long)(output_avg_abs_sum / level_chunks),
+                     (unsigned long)output_peak,
+                     current_dsp_status.have_params ? 1U : 0U,
+                     current_dsp_status.stale ? 1U : 0U,
+                     current_dsp_status.muted ? 1U : 0U,
+                     current_dsp_status.volume);
+            level_window_start_us = read_time_us;
+            input_avg_abs_sum = 0U;
+            output_avg_abs_sum = 0U;
+            input_peak = 0U;
+            output_peak = 0U;
+            level_chunks = 0U;
+        }
         if (xQueueSend(g_hub_audio_queue, &chunk, 0) != pdTRUE) {
             hub_note_queue_overrun();
         }

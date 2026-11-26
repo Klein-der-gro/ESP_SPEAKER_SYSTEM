@@ -105,8 +105,24 @@ static void control_task(void *arg)
             }
             int64_t now_us = esp_timer_get_time();
             if (now_us - last_status_us >= 1000000LL) {
-                ESP_LOGI(TAG, "Registered boxes: %lu",
-                         (unsigned long)hub_count_boxes(now_us));
+                hub_box_t boxes[HUB_BOX_COUNT];
+                hub_get_boxes(boxes, now_us);
+                uint8_t status = 0U;
+                if (boxes[PROTOCOL_ROLE_LEFT].active) {
+                    status |= PROTOCOL_UART_BOX_LEFT_CONNECTED;
+                }
+                if (boxes[PROTOCOL_ROLE_RIGHT].active) {
+                    status |= PROTOCOL_UART_BOX_RIGHT_CONNECTED;
+                }
+                esp_err_t status_err = hub_link_send_box_status(status);
+                if (status_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Could not forward box status to ESP A: %s",
+                             esp_err_to_name(status_err));
+                }
+                ESP_LOGI(TAG, "Registered boxes: %lu (LEFT=%u RIGHT=%u)",
+                         (unsigned long)hub_count_boxes(now_us),
+                         boxes[PROTOCOL_ROLE_LEFT].active ? 1U : 0U,
+                         boxes[PROTOCOL_ROLE_RIGHT].active ? 1U : 0U);
                 last_status_us = now_us;
             }
         }

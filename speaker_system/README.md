@@ -29,13 +29,14 @@ The LEFT and RIGHT boxes are the speaker outputs.
 | GPIO 18 | GPIO 18 | I2S BCLK |
 | GPIO 19 | GPIO 19 | I2S WS/LCK |
 | GPIO 23 | GPIO 23 | I2S data |
-| GPIO 17 | GPIO 16 | UART2 TX to RX, 115200 baud |
+| GPIO 17 | GPIO 16 | UART2 ESP A TX -> ESP B RX, 115200 baud |
+| GPIO 4 | GPIO 4 | UART2 ESP B TX -> ESP A RX, 115200 baud |
 | GND | GND | Common ground |
 
 Keep I2S connections short (about 20 cm or less). If needed, add 100-ohm
 series resistors to the I2S lines. ESP A is the I2S clock master; ESP B is the
-I2S receiver. ESP A GPIO 17/ESP B GPIO 16 are unsuitable on modules using
-those pins for PSRAM.
+I2S receiver. GPIO 4 carries returned box status. Check board pinouts before
+wiring; GPIO 16/17 may be reserved for PSRAM on some modules.
 
 ESP A's existing hardware remains unchanged: PCM5102 BCLK/LCK/DIN on
 GPIO 18/19/23; OLED SDA/SCL on GPIO 21/22; the two encoders use
@@ -78,17 +79,22 @@ used for both speakers.
 
 Expected log fragments:
 
-- ESP A: `firmware: MR-M0.2` and `UART2 rate link ready`.
+- ESP A: current firmware version and `UART2 full-duplex link ready`.
 - ESP B: `AP up: SSID=SPEAKER-NET ... IP=192.168.4.1`; `I2S slave RX ready`;
-  registered LEFT/RIGHT boxes and per-second packet/DSP status.
+  `Registered boxes: ...`; per-second packet/DSP status.
 - Boxes: `Speaker box ready, role=LEFT/RIGHT`, `Connected to hub Wi-Fi`,
   `LEFT/RIGHT box registered with hub`, and per-second jitter/loss status.
+- ESP A OLED home page: `L+` / `R+` means ESP B currently sees that box
+  registered; `L-` / `R-` means not registered or status link is stale.
+- OLED page 8 (`BOX STATUS`) shows the connected-box count and each role's
+  status. It displays `-- / 2` when ESP A has not received a fresh status frame.
 
 ## Responsibilities and current validation
 
 - ESP A does Bluetooth/A2DP decoding, controls, display, settings, and
   pre-DSP visualizer analysis. It sends raw stereo I2S plus sample rate and
-  DSP parameters to ESP B over UART.
+  DSP parameters to ESP B over UART. ESP B returns box-registration status
+  over UART so ESP A can display it.
 - ESP B performs bass/treble/vocal DSP, balance, volume, mute, and the final
   limiter once, then sends unicast UDP packets to registered boxes.
 - Each box selects its LEFT or RIGHT source channel, synchronizes packet
@@ -105,6 +111,7 @@ Expected log fragments:
 |---|---|---|
 | `SPEAKER-NET` is not visible | ESP B did not start its AP | Check ESP B monitor for `AP up`; verify its power and flash result. |
 | A box never registers | Wrong country/credentials, role wiring, or no DHCP | Use the shared settings in `protocol.h`; verify GPIO 27 and common ground. |
+| OLED shows `L-` / `R-` although a box says connected | Missing ESP B TX -> ESP A RX status wire | Connect ESP B GPIO 4 to ESP A GPIO 4, with common ground; verify ESP B logs registration. |
 | Box registers but reports no packets | ESP A isn't sending I2S, or ESP B has no I2S clock | Check ESP A Bluetooth playback, GPIO 18/19/23, and UART GPIO 17->16. |
 | Only one speaker plays | The other box is not registered or has the wrong role | Check both box logs and GPIO 27 jumper. |
 | Audio stutters | Wi-Fi loss, weak supply, or queue overruns | Check loss/overrun counters, use short USB cables and stable 5 V supplies, and keep ESP B outside metal enclosures. |

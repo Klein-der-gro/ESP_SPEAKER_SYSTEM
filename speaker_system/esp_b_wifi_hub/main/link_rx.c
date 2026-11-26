@@ -11,12 +11,32 @@
 #include "freertos/task.h"
 
 #define HUB_UART UART_NUM_2
+#define HUB_UART_TX_GPIO 4
 #define HUB_UART_RX_GPIO 16
 #define HUB_UART_RX_BUFFER_SIZE 512
+#define HUB_UART_TX_BUFFER_SIZE 256
 #define UART_MAX_PAYLOAD PROTOCOL_UART_DSP_PARAMS_PAYLOAD_SIZE
 
 static const char *TAG = "HUB_LINK";
 static TaskHandle_t s_link_task;
+
+esp_err_t hub_link_send_box_status(uint8_t status)
+{
+    uint8_t frame[4U + PROTOCOL_UART_BOX_STATUS_PAYLOAD_SIZE];
+    frame[0] = PROTOCOL_UART_START_BYTE;
+    frame[1] = PROTOCOL_UART_TYPE_BOX_STATUS;
+    frame[2] = PROTOCOL_UART_BOX_STATUS_PAYLOAD_SIZE;
+    frame[3] = status;
+    frame[4] = protocol_crc8(&frame[1], 2U +
+                             PROTOCOL_UART_BOX_STATUS_PAYLOAD_SIZE);
+    int written = uart_write_bytes(HUB_UART, (const char *)frame,
+                                   sizeof(frame));
+    if (written != sizeof(frame)) {
+        ESP_LOGE(TAG, "Box status UART write failed (%d bytes)", written);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
 
 static bool valid_params(const protocol_dsp_params_t *params)
 {
@@ -120,12 +140,13 @@ esp_err_t hub_link_rx_start(void)
     };
     ESP_RETURN_ON_ERROR(uart_param_config(HUB_UART, &config), TAG,
                         "UART configuration failed");
-    ESP_RETURN_ON_ERROR(uart_set_pin(HUB_UART, UART_PIN_NO_CHANGE,
+    ESP_RETURN_ON_ERROR(uart_set_pin(HUB_UART, HUB_UART_TX_GPIO,
                                      HUB_UART_RX_GPIO, UART_PIN_NO_CHANGE,
                                      UART_PIN_NO_CHANGE), TAG,
-                        "UART pin setup failed");
+                        "UART TX/RX pin setup failed");
     ESP_RETURN_ON_ERROR(uart_driver_install(HUB_UART,
-                                            HUB_UART_RX_BUFFER_SIZE, 0,
+                                            HUB_UART_RX_BUFFER_SIZE,
+                                            HUB_UART_TX_BUFFER_SIZE,
                                             0, NULL, 0), TAG,
                         "UART driver install failed");
     if (xTaskCreate(link_rx_task, "hub_link_rx", 3072, NULL, 5,
@@ -133,7 +154,7 @@ esp_err_t hub_link_rx_start(void)
         uart_driver_delete(HUB_UART);
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "UART2 RX ready: GPIO %d at %d baud", HUB_UART_RX_GPIO,
-             PROTOCOL_UART_BAUD);
+    ESP_LOGI(TAG, "UART2 full-duplex ready: TX GPIO %d RX GPIO %d at %d baud",
+             HUB_UART_TX_GPIO, HUB_UART_RX_GPIO, PROTOCOL_UART_BAUD);
     return ESP_OK;
 }

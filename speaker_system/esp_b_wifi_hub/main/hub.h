@@ -45,6 +45,7 @@ uint32_t hub_count_boxes(int64_t now_us);
 
 esp_err_t hub_wifi_start(void);
 esp_err_t hub_link_rx_start(void);
+esp_err_t hub_link_send_box_status(uint8_t status);
 esp_err_t hub_i2s_rx_start(void);
 esp_err_t hub_control_start(void);
 esp_err_t hub_udp_audio_start(void);

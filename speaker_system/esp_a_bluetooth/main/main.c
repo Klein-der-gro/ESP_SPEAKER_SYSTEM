@@ -541,6 +541,33 @@ static void i2s_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 }
 
+static protocol_dsp_params_t current_dsp_params(void)
+{
+    return (protocol_dsp_params_t) {
+        .bass_db = s_bass_boost * BASS_EQ_DB_PER_CONTROL_UNIT,
+        .treble_db = s_treble_boost * EQ_DB_PER_CONTROL_UNIT,
+        .vocal_db = s_vocal_boost * EQ_DB_PER_CONTROL_UNIT,
+        .balance = (int16_t)s_balance,
+        .volume = (int16_t)s_volume,
+        .muted = s_muted ? 1U : 0U,
+        .vocal_mode = (uint8_t)s_vocal_mode,
+    };
+}
+
+static void send_dsp_params_to_hub(void)
+{
+#if DSP_ON_HUB
+    if (!s_link_tx_ready) return;
+    protocol_dsp_params_t params = current_dsp_params();
+    esp_err_t err = link_tx_send_dsp_params(&params);
+    if (err != ESP_OK && !s_link_tx_error_logged) {
+        ESP_LOGE(TAG, "DSP parameters could not be sent to ESP B: %s",
+                 esp_err_to_name(err));
+        s_link_tx_error_logged = true;
+    }
+#endif
+}
+
 /* Liest PCM-Daten aus dem Stream-Puffer, wendet die Lautstaerke an und gibt sie per I2S aus */
 static void i2s_task(void *arg)
 {
@@ -682,25 +709,8 @@ static void i2s_task(void *arg)
             portEXIT_CRITICAL(&s_visualizer_mux);
         }
 
-        protocol_dsp_params_t dsp_params = {
-            .bass_db = s_bass_boost * BASS_EQ_DB_PER_CONTROL_UNIT,
-            .treble_db = s_treble_boost * EQ_DB_PER_CONTROL_UNIT,
-            .vocal_db = s_vocal_boost * EQ_DB_PER_CONTROL_UNIT,
-            .balance = (int16_t)s_balance,
-            .volume = (int16_t)s_volume,
-            .muted = s_muted ? 1U : 0U,
-            .vocal_mode = (uint8_t)s_vocal_mode,
-        };
-#if DSP_ON_HUB
-        if (s_link_tx_ready) {
-            esp_err_t params_err = link_tx_send_dsp_params(&dsp_params);
-            if (params_err != ESP_OK && !s_link_tx_error_logged) {
-                ESP_LOGE(TAG, "DSP parameters could not be sent to ESP B: %s",
-                         esp_err_to_name(params_err));
-                s_link_tx_error_logged = true;
-            }
-        }
-#else
+#if !DSP_ON_HUB
+        protocol_dsp_params_t dsp_params = current_dsp_params();
         dsp_set_params(dsp_params.bass_db, dsp_params.treble_db,
                        dsp_params.vocal_db, dsp_params.balance,
                        dsp_params.volume, dsp_params.muted != 0U,
@@ -1193,6 +1203,10 @@ static void ui_task(void *arg)
     uint32_t shown_progress_second = UINT32_MAX;
     bool shown_connection = false;
     bool shown_avrc_connection = false;
+    bool shown_left_box_connected = false;
+    bool shown_right_box_connected = false;
+    bool shown_box_status_fresh = false;
+    uint8_t shown_connected_box_count = UINT8_MAX;
     bool shown_playing = false;
     bool shown_clipped = false;
     bool shown_audio_active = false;
@@ -1338,6 +1352,15 @@ static void ui_task(void *arg)
         int balance = s_balance;
         bool connected = s_a2dp_connected;
         bool avrc_connected = s_avrc_connected;
+        uint8_t box_status = 0U;
+        bool box_status_fresh = link_tx_get_box_status(&box_status);
+        bool left_box_connected =
+            (box_status & PROTOCOL_UART_BOX_LEFT_CONNECTED) != 0U;
+        bool right_box_connected =
+            (box_status & PROTOCOL_UART_BOX_RIGHT_CONNECTED) != 0U;
+        uint8_t connected_box_count =
+            (left_box_connected ? 1U : 0U) +
+            (right_box_connected ? 1U : 0U);
         bool playing = s_playing;
         uint8_t oled_page = s_oled_page;
         bool wave_mode = s_wave_mode;
@@ -1463,6 +1486,12 @@ static void ui_task(void *arg)
         }
         bool changed = connected != shown_connection ||
                        avrc_connected != shown_avrc_connection ||
+                       (oled_page == 0 &&
+                        (left_box_connected != shown_left_box_connected ||
+                         right_box_connected != shown_right_box_connected)) ||
+                       (oled_page == 7 &&
+                        (box_status_fresh != shown_box_status_fresh ||
+                         connected_box_count != shown_connected_box_count)) ||
                        playing != shown_playing || clipped != shown_clipped ||
                        s_muted != shown_muted ||
                        page_button_pressed != shown_page_button_pressed ||
@@ -1499,10 +1528,12 @@ static void ui_task(void *arg)
             oled_clear();
             if (oled_page == 0) {
                 oled_text(0, 0, connected ? "BT+" : "BT-", 1);
-                oled_text(26, 0, avrc_connected ? "CTRL+" : "CTRL-", 1);
-                oled_text(64, 0, "1/8", 1);
-                oled_text(96, 0, clipped ? "CLIP!" : (s_muted ? "MUTE" :
-                          (playing ? "PLAY" : "PAUSE")), 1);
+                oled_text(22, 0, avrc_connected ? "CTRL+" : "CTRL-", 1);
+                oled_text(56, 0, left_box_connected ? "L+" : "L-", 1);
+                oled_text(68, 0, right_box_connected ? "R+" : "R-", 1);
+                oled_text(80, 0, "1/8", 1);
+                oled_text(102, 0, clipped ? "CLIP" : (s_muted ? "MUTE" :
+                          (playing ? "PLAY" : "PAUS")), 1);
             } else if (oled_page == 1) {
                 oled_text(0, 0, "PROGRESS", 1);
             } else if (oled_page == 2) {
@@ -1516,7 +1547,7 @@ static void ui_task(void *arg)
             } else if (oled_page == 6) {
                 oled_text(0, 0, "SETUP", 1);
             } else if (oled_page == 7) {
-                oled_text(0, 0, "VERSION", 1);
+                oled_text(0, 0, "BOX STATUS", 1);
             }
             if (oled_page != 0) {
                 char page_label[8];
@@ -1704,8 +1735,21 @@ static void ui_task(void *arg)
                     oled_text(10, 37, s_visualizer_fast ? "FAST" : "SMOOTH", 2);
                 }
             } else if (oled_page == 7) {
-                oled_text(0, 24, "FIRMWARE BUILD", 1);
-                oled_text_window(0, 40, FIRMWARE_VERSION_NAME, 1, 21, 0);
+                oled_text(8, 16, "CONNECTED BOXES", 1);
+                if (box_status_fresh) {
+                    char count_text[8];
+                    snprintf(count_text, sizeof(count_text), "%u / 2",
+                             (unsigned)connected_box_count);
+                    oled_text(40, 27, count_text, 2);
+                    oled_text(8, 50, left_box_connected ? "LEFT: ON" :
+                              "LEFT: OFF", 1);
+                    oled_text(72, 50, right_box_connected ? "RIGHT: ON" :
+                              "RIGHT: OFF", 1);
+                } else {
+                    oled_text(40, 27, "-- / 2", 2);
+                    oled_text(8, 50, "LEFT: --", 1);
+                    oled_text(72, 50, "RIGHT: --", 1);
+                }
             } else if (oled_page == 5) {
                     char balance_text[20];
                     snprintf(balance_text, sizeof(balance_text), "%s %d%%",
@@ -1785,6 +1829,10 @@ static void ui_task(void *arg)
         }
         shown_connection = connected;
         shown_avrc_connection = avrc_connected;
+        shown_left_box_connected = left_box_connected;
+        shown_right_box_connected = right_box_connected;
+        shown_box_status_fresh = box_status_fresh;
+        shown_connected_box_count = connected_box_count;
         shown_playing = playing;
         shown_clipped = clipped;
         shown_audio_active = audio_active;
@@ -1811,6 +1859,7 @@ static void ui_task(void *arg)
         memcpy(shown_spectrum_peaks, spectrum_peaks, sizeof(shown_spectrum_peaks));
         memcpy(shown_waveform, waveform, sizeof(shown_waveform));
         memcpy(shown_vu, vu, sizeof(shown_vu));
+        send_dsp_params_to_hub();
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -2188,6 +2237,7 @@ void app_main(void)
         ESP_LOGE(TAG, "UART link to ESP B unavailable: %s",
                  esp_err_to_name(link_err));
     }
+    send_dsp_params_to_hub();
     i2s_init();
     xTaskCreatePinnedToCore(i2s_task, "i2s_task", 4096, NULL, 6,
                             &s_i2s_task_handle, 1);

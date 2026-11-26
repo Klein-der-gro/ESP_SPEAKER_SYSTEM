@@ -2,7 +2,13 @@
 
 **Last updated:** 2026-11-26  
 **Project:** Four-board ESP32 Bluetooth and multiroom speaker system  
-**Status:** Firmware implementation builds; hardware integration is not yet verified.
+**Status:** ESP A, ESP B, and the LEFT box have been flashed. COM5 is currently
+on the LEFT box; monitoring from the box project confirms it boots, registers,
+and plays packets, but received PCM is exactly zero. Earlier ESP B diagnostics
+showed nonzero I2S input but zero post-DSP output because no DSP controls were
+arriving (`params=0 stale=1`). ESP A now sends DSP controls independently of
+Bluetooth audio; this update builds but has not yet been flashed or verified
+over UART. Physical sound output remains unverified.
 
 ## Physical pin map
 
@@ -12,12 +18,14 @@
 | ESP A | 19 | I2S WS/LCK to PCM5102 and ESP B |
 | ESP A | 23 | I2S data out to PCM5102 DIN and ESP B DIN |
 | ESP A | 17 | UART2 TX -> ESP B GPIO 16 RX |
+| ESP A | 4 | UART2 RX <- ESP B GPIO 4 TX (box-status return) |
 | ESP A | 21 | OLED SDA |
 | ESP A | 22 | OLED SCL |
 | ESP A | 33 / 27 / 14 | Encoder 1 CLK / DT / switch |
 | ESP A | 32 / 25 / 26 | Encoder 2 CLK / DT / switch |
 | ESP B | 18 / 19 / 23 | I2S BCLK / WS / data in from ESP A |
 | ESP B | 16 | UART2 RX from ESP A GPIO 17 |
+| ESP B | 4 | UART2 TX -> ESP A GPIO 4 RX (box-status return) |
 | Each box | 18 / 19 / 23 | I2S BCLK / WS / data out to PCM5102 |
 | Each box | 27 | Role select: open = LEFT; connect to GND = RIGHT |
 
@@ -48,19 +56,28 @@ validation, and keep the unverified items explicit.
 ## Important firmware settings
 
 - Shared definitions are in `common/protocol/include/protocol.h`.
-- Firmware label/version: `MR-M0.2` / protocol version `2`.
+- Firmware label/version: `NR-3.0.26.11` / protocol version `2`.
 - ESP B access point: SSID `SPEAKER-NET`, example password
   `change-me-1234`, channel 1, hub address `192.168.4.1`, country `AT`.
   The password is public example text, not a secret.
 - ESP A -> ESP B UART2 runs at 115200 baud. Frames start with `0xA5`, carry
   type/length/payload, and end with CRC-8 (polynomial `0x07`). Sample-rate
   payloads are 4 bytes; DSP-parameter payloads are 18 bytes.
+- ESP B returns a CRC-protected UART box-status byte to ESP A once per second.
+  Connect ESP B GPIO 4 TX -> ESP A GPIO 4 RX and share GND. On ESP A's OLED
+  home page, `L+` and `R+` mean ESP B recently received that role's UDP
+  registration heartbeat; `L-` / `R-` mean it has not, or the UART status
+  frame is stale. Page 8 (`BOX STATUS`) displays the current connected-box
+  count and each role; `-- / 2` means the status frame is stale or unavailable.
+  Registration indicators do not confirm audio playback.
 - Audio is 16-bit stereo, 256 frames per packet. Each UDP audio datagram is
   1056 bytes total (32-byte header plus 1024-byte PCM payload). Audio uses
   UDP port 5004; box registration and clock sync use UDP port 5005.
 - The hub uses a 120 ms box playout delay. Boxes send registration heartbeats
   and clock-sync requests automatically; no static IP configuration is
   needed.
+- The box uses a 1 kHz FreeRTOS tick to schedule sub-10 ms audio packets
+  without keeping the idle core from running.
 - `DSP_ON_HUB` is enabled: ESP A sends raw audio and controls, ESP B does the
   shared DSP/limiting, and boxes do channel selection plus crossover.
 - Box crossover is LR4 at 2500 Hz. DAC left is the high-frequency output;
@@ -93,12 +110,15 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 ## Configuration and safety
 
-- Version label: `MR-M0.2`.
+- Version label: `NR-3.0.26.11`.
 - Hub SSID: `SPEAKER-NET`; example password: `change-me-1234`; hub IP:
   `192.168.4.1`; Wi-Fi country: `AT`.
 - The example password is public and must not be used as a personal secret.
   Update shared settings in `common/protocol/include/protocol.h`, then rebuild
   and flash ESP B and both boxes together.
+- The LEFT box and ESP A both reported 4 MB physical flash at boot, and their
+  project defaults/local configurations now match. ESP B also confirmed 4 MB
+  at boot after flashing with a 4 MB image.
 - Disconnect the amplifier from ESP A's DAC during hub-DSP testing; its DAC
   output is raw, unprocessed audio.
 - Box crossover defaults to 2500 Hz LR4. Verify it against the actual drivers
@@ -113,8 +133,61 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 - ESP A, ESP B, and speaker-box projects each built successfully with ESP-IDF
   6.1.
+- ESP A, ESP B, and the box were rebuilt with full-duplex box-status reporting
+  and immediate STA connection. The box build now generates flash commands
+  declaring 4 MB, matching the reported chip detection.
 - ESP B and speaker-box projects rebuilt successfully after moving Wi-Fi
   maximum TX-power configuration until after `esp_wifi_start()`.
+- Box STA connection now starts on `WIFI_EVENT_STA_START`, retries after a
+  disconnect, and logs disconnect reasons/IP to diagnose AP and password
+  problems.
+- Box project flash-size configuration now matches the reported 4 MB device.
+- Flashed ESP A on COM5. Boot confirmed 4 MB flash, found the OLED at I2C
+  address `0x3C`, and initialized UART2 full-duplex at 115200 baud on TX GPIO
+  17 / RX GPIO 4.
+- Fixed ESP A's UART startup failure: its RX ring buffer was 128 bytes, equal
+  to the UART FIFO size, but ESP-IDF requires a larger buffer. Increased it to
+  256 bytes; the flashed firmware now reports `UART2 full-duplex link ready`.
+- Bluetooth A2DP starts and pairing is enabled. The monitor showed A2DP
+  connection attempts failing/disconnecting, so phone pairing and Bluetooth
+  audio are not yet verified.
+- Flashed the LEFT box on COM5. Boot confirmed 4 MB flash; it joined
+  `SPEAKER-NET` at `192.168.4.2`, registered with the hub, and reported
+  `playing=1` with zero queue drops over an approximately 39-second monitor
+  capture.
+- Flashed ESP B on COM5 (MAC `70:4b:ca:83:4a:a8`). The generated flash command
+  used `--flash-size 4MB`; boot confirmed 4 MB flash and the application
+  started successfully. During a roughly 70-second monitor capture, the LEFT
+  box registered and audio traffic sustained about 173 packets/s at 44.1 kHz
+  with zero queue overruns. DSP average/maximum was about 626/804 us against
+  a 2902 us half-chunk budget. No runtime errors, watchdog warnings, or resets
+  were observed.
+- Added and flashed temporary PCM average-absolute/peak diagnostics on the
+  LEFT box via COM5. Over an approximately 88-second capture, it stayed
+  registered and `playing=1`, but every sampled packet reported
+  `pcm_avg_abs=0` and `pcm_peak=0`; queue drops remained zero. Thus packets
+  reach the box, but the sampled payload was digital silence while music was
+  reported playing. Follow-up ESP B diagnostics on COM5 found nonzero raw I2S
+  (`avg_abs` about 260-338, `peak` about 1034-1081) but zero post-DSP samples.
+  The logs consistently reported `params=0 stale=1`; the UART receiver is not
+  getting valid DSP controls, so the hub's stale-control fail-safe is muting
+  audio before forwarding it. Audio traffic remained about 173 packets/s with
+  zero hub queue overruns and DSP within budget. Physical DAC output remains
+  untested.
+- Correctly monitored COM5 from the `esp_box` project. The LEFT box booted
+  without an assertion, connected to the hub, registered, and played incoming
+  packets; its PCM diagnostics still read `pcm_avg_abs=0 pcm_peak=0`.
+  Monitoring from the ESP B project while the box was connected had previously
+  misidentified the backtrace because it used the wrong ELF.
+- Fixed the box audio-receive task stack overflow by increasing its stack from
+  4096 to 8192 bytes. Playback now avoids comparing hub timestamps to the
+  box's local clock until clock synchronization is valid.
+- The first live playback capture showed task-watchdog warnings because a
+  100 Hz RTOS tick could not schedule the 5.8 ms audio chunks precisely. The
+  box now uses a 1 kHz tick; the final 34-second capture had no watchdog
+  warnings or resets, with typical playout error of 1-2 us.
+- UART2 is full-duplex: ESP B sends registered LEFT/RIGHT status to ESP A;
+  ESP A home OLED renders the two status indicators.
 - ESP B rebuilt after the DSP optimization change. Its generated compiler
   command was checked and includes `-O2` for `dsp.c`.
 - ESP B defaults to ESP-IDF performance optimization (`-O2`) instead of the
@@ -132,23 +205,41 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 ## Not yet verified
 
-- The new multi-ESP firmware has not been flashed to all four boards. A
-  previous ESP A flash predates this implementation.
-- End-to-end Bluetooth-to-speaker playback, AP joining on the actual boards,
-  Wi-Fi throughput/recovery, packet synchronization, sound quality, and
-  extended playback still require hardware testing.
+- ESP A, ESP B, and the LEFT box have the latest firmware. The RIGHT box
+  still needs it.
+- Physical sound output and complete Bluetooth-to-speaker playback were not
+  confirmed by listening; longer playback and Wi-Fi recovery still need
+  hardware testing.
+- The box's PCM diagnostic reads exact zero samples. ESP B previously reported
+  nonzero I2S but `params=0 stale=1` and zero post-DSP samples. ESP A's control
+  sender has been changed to send its current settings at startup and from the
+  UI task even when Bluetooth has no audio frames; its build passed, but this
+  firmware still needs to be flashed and UART reception verified. Connect
+  ESP A GPIO 17 TX -> ESP B GPIO 16 RX with common GND.
+- GPIO 4 is only the optional ESP B status return (B GPIO 4 TX -> A GPIO 4 RX);
+  it does not carry audio or the DSP controls. The user reports connecting
+  GPIO 4 to GPIO 4.
+- ESP A's latest logs show Bluetooth connection attempts timing out with HCI
+  status `0x0b`. A phone/player connection and nonzero A2DP PCM are not yet
+  verified; valid DSP controls alone cannot produce music without an audio
+  source.
+- The earlier `wifi:enable tsf doesnt work` line was not evidence of failure.
+  The flashed firmware subsequently associated, acquired an IP, and registered
+  with ESP B.
 - Host-side C tests were not run because no native C compiler was available.
 - Do not push the current changes unless explicitly requested.
 
 ## Next steps
 
-1. Review the actual board pinouts and wire ESP A to ESP B as documented.
-2. Flash ESP A, ESP B, and the same box binary to both boxes; set the RIGHT
-   role jumper before powering that box.
-3. Keep ESP A's amplifier disconnected, monitor each board, and verify AP
-   startup, box registration, and incoming audio packets.
-4. Test playback at low amplifier gain only after confirming the crossover
-   against the driver datasheets. Record hardware results here.
+1. Flash the newly built ESP A firmware, with the control wire ESP A GPIO 17
+   TX -> ESP B GPIO 16 RX and common GND connected. Confirm B reports fresh DSP
+   parameters (`params=1 stale=0`) and nonzero post-DSP samples.
+2. Pair a phone/player with ESP A and verify A2DP plus nonzero audio at B and
+   nonzero PCM at the box. GPIO 4 may remain connected for status only.
+3. Flash the same box binary to the RIGHT box; set its role jumper to GND
+   before powering it, then verify both registrations and packet flow.
+4. Test physical playback at low amplifier gain only after confirming the
+   crossover against the driver datasheets. Record hardware results here.
 
 ## Handoff update log
 
@@ -164,3 +255,55 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
   DSP component with `-O2`; also skips unused vocal filters when vocal mode is
   OFF. ESP B build passed and the generated `dsp.c` command contains `-O2`.
   Flash and hardware timing verification are still required.
+- **2026-11-26:** Started box Wi-Fi connection immediately on station-start,
+  added disconnect-reason/IP logging and automatic reconnect; added a
+  CRC-protected ESP B-to-ESP A UART status return and OLED `L+`/`R+`
+  registration indicators. Updated the box flash-size default to 4 MB based
+  on the reported board detection. Rebuilt all three firmware projects;
+  wiring and hardware verification are still required.
+- **2026-11-26:** Fixed the box audio-receive stack overflow, avoided applying
+  hub timestamps before clock sync, and raised the box FreeRTOS tick to 1 kHz
+  for audio scheduling. Flashed the LEFT box on COM5; it joined the hub,
+  registered, and played with zero queue drops and no watchdog warnings over
+  an approximately 39-second monitor capture. Physical sound output and the
+  other boards remain unverified.
+- **2026-11-26:** Flashed ESP A on COM5. The boot confirmed 4 MB flash, OLED
+  discovery at `0x3C`, and UART2 full-duplex initialization. Fixed the RX
+  buffer-size check by increasing it from 128 to 256 bytes. Bluetooth starts,
+  but captured A2DP attempts failed/disconnected; phone pairing remains
+  unverified.
+- **2026-11-26:** Flashed ESP B on COM5 after correcting its flash-size
+  configuration to 4 MB. Boot confirmed 4 MB, and a roughly 70-second runtime
+  capture showed the LEFT box registered with sustained 44.1 kHz audio traffic,
+  zero queue overruns, and DSP comfortably within budget. GPIO 4 status
+  wiring remains deferred; physical sound and end-to-end Bluetooth playback
+  are still unverified.
+- **2026-11-26:** Added temporary PCM average/peak diagnostics to the box and
+  flashed it on COM5. Over roughly 88 seconds it remained registered and
+  playing, but received PCM was exactly zero (`pcm_avg_abs=0`, `pcm_peak=0`).
+  The user confirmed music was playing and that ESP A/B were wired only for
+  I2S/common ground. ESP B intentionally mutes when DSP controls are missing
+  or stale, so the absent ESP A GPIO 17 -> ESP B GPIO 16 UART link is the
+  leading cause. A subsequent COM5 capture identified ESP B and showed
+  continued I2S input and forwarding, with zero hub queue overruns. B's raw
+  versus post-DSP PCM levels still need checking after the forward control
+  wire is added. GPIO 4 remains deferred.
+- **2026-11-26:** Flashed ESP B's raw/post-DSP level diagnostics on COM5.
+  Input was nonzero (`avg_abs` about 260-338; `peak` about 1034-1081), while
+  post-DSP PCM remained exactly zero and logs consistently showed
+  `params=0 stale=1`. This confirms ESP B receives audio over I2S but does not
+  receive valid DSP control frames over UART; its stale-control fail-safe
+  mutes the stream sent to the box. Verify A GPIO 17 TX -> B GPIO 16 RX and
+  common GND. GPIO 4 remains deferred.
+- **2026-11-26:** Monitored COM5 from the correct ESP box project. The box
+  booted normally, joined the hub, registered, and played packets; its
+  received PCM remained zero. Fixed ESP A so current DSP controls are sent at
+  startup and periodically by the UI task, independent of incoming Bluetooth
+  audio frames; made the first DSP UART frame send immediately. ESP A build
+  passed. It has not been flashed or verified because COM5 is connected to the
+  box. The A2DP logs still show connection timeouts (`0x0b`), so a working
+  Bluetooth audio source remains a separate requirement.
+- **2026-11-26:** Added an OLED page 8 box-status display showing registered
+  boxes out of two and LEFT/RIGHT connection states. It shows unknown
+  (`-- / 2`) when the UART status frame is stale. ESP A build passed; flashing
+  and on-device display verification remain pending.

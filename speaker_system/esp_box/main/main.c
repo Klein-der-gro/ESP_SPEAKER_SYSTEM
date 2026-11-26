@@ -54,6 +54,8 @@ static int64_t s_sync_request_t1;
 static int64_t s_last_audio_us;
 static uint32_t s_packets_lost;
 static uint32_t s_queue_drops;
+static uint32_t s_pcm_avg_abs;
+static uint32_t s_pcm_peak;
 static int64_t s_playout_error_us;
 static bool s_playing;
 
@@ -91,28 +93,42 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 {
     (void)arg;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event =
+            (const wifi_event_sta_disconnected_t *)event_data;
+        uint8_t reason = event != NULL ? event->reason : 0U;
         xEventGroupClearBits(s_wifi_events, BOX_WIFI_CONNECTED_BIT);
         mark_unregistered();
         xQueueReset(s_audio_queue);
-        ESP_LOGW(TAG, "Wi-Fi disconnected; reconnecting automatically");
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(s_wifi_events, BOX_WIFI_CONNECTED_BIT);
-        ESP_LOGI(TAG, "Connected to hub Wi-Fi");
-    }
-}
-
-static void wifi_retry_task(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        if (!station_connected()) {
-            esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
-                ESP_LOGW(TAG, "Wi-Fi reconnect request failed: %s",
-                         esp_err_to_name(err));
-            }
+        if (reason == WIFI_REASON_NO_AP_FOUND) {
+            ESP_LOGW(TAG, "Hub AP not found; check ESP B power and SSID "
+                     "(reason=%u)", reason);
+        } else if (reason == WIFI_REASON_AUTH_FAIL ||
+                   reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT) {
+            ESP_LOGW(TAG, "Hub Wi-Fi authentication failed; check password "
+                     "(reason=%u)", reason);
+        } else {
+            ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%u); reconnecting",
+                     reason);
         }
-        vTaskDelay(pdMS_TO_TICKS(1500));
+        esp_err_t reconnect_err = esp_wifi_connect();
+        if (reconnect_err != ESP_OK && reconnect_err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGE(TAG, "Wi-Fi reconnect request failed: %s",
+                     esp_err_to_name(reconnect_err));
+        }
+    } else if (event_base == WIFI_EVENT &&
+               event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi station started; joining SSID %s",
+                 PROTOCOL_WIFI_SSID);
+        esp_err_t connect_err = esp_wifi_connect();
+        if (connect_err != ESP_OK && connect_err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGE(TAG, "Initial Wi-Fi connection request failed: %s",
+                     esp_err_to_name(connect_err));
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
+        xEventGroupSetBits(s_wifi_events, BOX_WIFI_CONNECTED_BIT);
+        ESP_LOGI(TAG, "Connected to hub Wi-Fi, IP=" IPSTR,
+                 IP2STR(&event->ip_info.ip));
     }
 }
 
@@ -125,10 +141,14 @@ static esp_err_t wifi_start(void)
                         "event loop init failed");
     if (esp_netif_create_default_wifi_sta() == NULL) return ESP_ERR_NO_MEM;
 
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                wifi_event_handler, NULL));
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(
+                            WIFI_EVENT, ESP_EVENT_ANY_ID,
+                            wifi_event_handler, NULL),
+                        TAG, "Wi-Fi event handler registration failed");
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(
+                            IP_EVENT, IP_EVENT_STA_GOT_IP,
+                            wifi_event_handler, NULL),
+                        TAG, "IP event handler registration failed");
     wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_config), TAG, "Wi-Fi init failed");
     wifi_country_t country = {
@@ -162,10 +182,6 @@ static esp_err_t wifi_start(void)
     if (tx_power_err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi TX power setup failed after station start: %s; "
                  "using driver default", esp_err_to_name(tx_power_err));
-    }
-    if (xTaskCreate(wifi_retry_task, "box_wifi_retry", 3072, NULL, 3,
-                    NULL) != pdPASS) {
-        return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }
@@ -395,6 +411,19 @@ static void audio_rx_task(void *arg)
         }
         memcpy(audio.samples, packet + sizeof(audio.header),
                PROTOCOL_AUDIO_PAYLOAD_BYTES);
+        uint64_t sample_abs_sum = 0U;
+        uint32_t sample_peak = 0U;
+        for (size_t i = 0; i < PROTOCOL_CHUNK_FRAMES * 2U; i++) {
+            int32_t sample = audio.samples[i];
+            uint32_t magnitude = (uint32_t)(sample < 0 ? -sample : sample);
+            sample_abs_sum += magnitude;
+            if (magnitude > sample_peak) sample_peak = magnitude;
+        }
+        portENTER_CRITICAL(&s_status_mux);
+        s_pcm_avg_abs = (uint32_t)(sample_abs_sum /
+                                   (PROTOCOL_CHUNK_FRAMES * 2U));
+        s_pcm_peak = sample_peak;
+        portEXIT_CRITICAL(&s_status_mux);
         if (have_sequence && audio.header.seq > expected_sequence) {
             portENTER_CRITICAL(&s_status_mux);
             s_packets_lost += audio.header.seq - expected_sequence;
@@ -429,6 +458,8 @@ static void status_task(void *arg)
             ? ap_info.rssi : 0;
         uint32_t lost;
         uint32_t drops;
+        uint32_t pcm_avg_abs;
+        uint32_t pcm_peak;
         int64_t offset_us;
         int64_t error_us;
         bool sync_valid;
@@ -436,6 +467,8 @@ static void status_task(void *arg)
         portENTER_CRITICAL(&s_status_mux);
         lost = s_packets_lost;
         drops = s_queue_drops;
+        pcm_avg_abs = s_pcm_avg_abs;
+        pcm_peak = s_pcm_peak;
         offset_us = s_clock_offset_us;
         error_us = s_playout_error_us;
         sync_valid = s_sync_valid;
@@ -445,14 +478,16 @@ static void status_task(void *arg)
         portEXIT_CRITICAL(&s_status_mux);
         ESP_LOGI(TAG, "role=%s wifi=%s registered=%u RSSI=%d dBm jitter=%u "
                  "packets lost=%lu queue drops=%lu offset=%lld us "
-                 "playout error=%lld us playing=%u",
+                 "playout error=%lld us playing=%u pcm_avg_abs=%lu "
+                 "pcm_peak=%lu",
                  s_role == PROTOCOL_ROLE_LEFT ? "LEFT" : "RIGHT",
                  station_connected() ? "connected" : "disconnected",
                  box_registered() ? 1U : 0U, rssi,
                  (unsigned)uxQueueMessagesWaiting(s_audio_queue),
                  (unsigned long)lost, (unsigned long)drops,
                  (long long)(sync_valid ? offset_us : 0),
-                 (long long)error_us, playing ? 1U : 0U);
+                 (long long)error_us, playing ? 1U : 0U,
+                 (unsigned long)pcm_avg_abs, (unsigned long)pcm_peak);
     }
 }
 
@@ -461,8 +496,8 @@ static void wait_until_us(int64_t deadline_us)
     for (;;) {
         int64_t remaining = deadline_us - esp_timer_get_time();
         if (remaining <= 250) return;
-        if (remaining > 10000) {
-            TickType_t ticks = pdMS_TO_TICKS((uint32_t)(remaining / 1000 - 2));
+        if (remaining > 2000) {
+            TickType_t ticks = pdMS_TO_TICKS((uint32_t)(remaining / 1000 - 1));
             if (ticks > 0U) {
                 vTaskDelay(ticks);
                 continue;
@@ -569,9 +604,11 @@ static void audio_player_task(void *arg)
         offset_us = s_clock_offset_us;
         sync_valid = s_sync_valid;
         portEXIT_CRITICAL(&s_status_mux);
-        int64_t deadline_us = (int64_t)packet.header.hub_time_us +
-            (sync_valid ? offset_us : 0) + PROTOCOL_PLAYOUT_DELAY_US;
         int64_t now_us = esp_timer_get_time();
+        int64_t deadline_us = sync_valid
+            ? (int64_t)packet.header.hub_time_us + offset_us +
+                  PROTOCOL_PLAYOUT_DELAY_US
+            : now_us;
         if (now_us - deadline_us > BOX_LATE_DROP_US) {
             portENTER_CRITICAL(&s_status_mux);
             s_packets_lost++;
@@ -673,7 +710,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2s_start(44100U));
     if (xTaskCreate(control_task, "box_control", 4096, NULL, 4,
                     NULL) != pdPASS ||
-        xTaskCreate(audio_rx_task, "box_audio_rx", 4096, NULL, 5,
+        xTaskCreate(audio_rx_task, "box_audio_rx", 8192, NULL, 5,
                     NULL) != pdPASS ||
         xTaskCreate(status_task, "box_status", 3072, NULL, 2,
                     NULL) != pdPASS ||

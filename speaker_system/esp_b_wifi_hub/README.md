@@ -9,6 +9,8 @@ speaker boxes by unicast UDP.
 - ESP A BCLK GPIO 18 -> GPIO 18; WS GPIO 19 -> GPIO 19; data GPIO 23 -> GPIO
   23; GND -> GND.
 - ESP A UART2 TX GPIO 17 -> ESP B RX GPIO 16 (115200 baud); connect GND.
+- ESP B UART2 TX GPIO 4 -> ESP A RX GPIO 4 (115200 baud) for box-registration
+  status on ESP A's OLED.
 - Keep I2S wires short. GPIO 16 may not be available on modules that use it
   for PSRAM.
 

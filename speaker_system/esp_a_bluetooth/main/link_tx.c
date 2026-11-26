@@ -9,20 +9,118 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/portmacro.h"
 
 #define LINK_UART UART_NUM_2
 #define LINK_UART_TX_GPIO 17
+#define LINK_UART_RX_GPIO 4
 #define LINK_UART_TX_BUFFER_SIZE 256
+#define LINK_UART_RX_BUFFER_SIZE 256
 #define LINK_HEARTBEAT_MS 1000
 #define LINK_PARAMS_MIN_INTERVAL_MS 50
+#define LINK_UART_MAX_PAYLOAD PROTOCOL_UART_DSP_PARAMS_PAYLOAD_SIZE
 
 static const char *TAG = "LINK_TX";
 static SemaphoreHandle_t s_link_mutex;
+static TaskHandle_t s_link_rx_task_handle;
+static portMUX_TYPE s_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_rate = 44100;
 static protocol_dsp_params_t s_last_params;
 static bool s_have_params;
+static bool s_params_sent;
 static TickType_t s_last_params_sent;
 static bool s_link_ready;
+static uint8_t s_box_status;
+static TickType_t s_box_status_tick;
+static bool s_box_status_received;
+
+bool link_tx_get_box_status(uint8_t *status)
+{
+    if (status == NULL) {
+        return false;
+    }
+    TickType_t now = xTaskGetTickCount();
+    bool fresh;
+    portENTER_CRITICAL(&s_status_mux);
+    fresh = s_box_status_received &&
+        (TickType_t)(now - s_box_status_tick) <
+            pdMS_TO_TICKS(PROTOCOL_UART_BOX_STATUS_TIMEOUT_MS);
+    *status = fresh ? s_box_status : 0U;
+    portEXIT_CRITICAL(&s_status_mux);
+    return fresh;
+}
+
+static void handle_rx_frame(const uint8_t *frame, uint8_t payload_size)
+{
+    if (frame[0] != PROTOCOL_UART_TYPE_BOX_STATUS ||
+        payload_size != PROTOCOL_UART_BOX_STATUS_PAYLOAD_SIZE ||
+        (frame[2] & (uint8_t)~(PROTOCOL_UART_BOX_LEFT_CONNECTED |
+                              PROTOCOL_UART_BOX_RIGHT_CONNECTED)) != 0U) {
+        return;
+    }
+    TickType_t now = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_status_mux);
+    s_box_status = frame[2];
+    s_box_status_tick = now;
+    s_box_status_received = true;
+    portEXIT_CRITICAL(&s_status_mux);
+}
+
+static void parse_rx_byte(uint8_t byte,
+                          uint8_t frame[2U + LINK_UART_MAX_PAYLOAD + 1U],
+                          size_t *used, size_t *expected)
+{
+    if (*used == 0U) {
+        if (byte == PROTOCOL_UART_START_BYTE) {
+            *used = 1U;
+        }
+        return;
+    }
+    if (*used == 1U) {
+        frame[0] = byte;
+        *used = 2U;
+        return;
+    }
+    if (*used == 2U) {
+        if (byte > LINK_UART_MAX_PAYLOAD) {
+            *used = 0U;
+            *expected = 0U;
+            return;
+        }
+        frame[1] = byte;
+        *expected = 4U + (size_t)byte;
+        *used = 3U;
+        return;
+    }
+
+    frame[*used - 1U] = byte;
+    (*used)++;
+    if (*used == *expected) {
+        uint8_t payload_size = frame[1];
+        uint8_t crc = protocol_crc8(frame, 2U + payload_size);
+        if (crc == frame[2U + payload_size]) {
+            handle_rx_frame(frame, payload_size);
+        }
+        *used = 0U;
+        *expected = 0U;
+    }
+}
+
+static void link_rx_task(void *arg)
+{
+    (void)arg;
+    uint8_t bytes[32];
+    uint8_t frame[2U + LINK_UART_MAX_PAYLOAD + 1U] = {0};
+    size_t used = 0U;
+    size_t expected = 0U;
+    for (;;) {
+        int count = uart_read_bytes(LINK_UART, bytes, sizeof(bytes),
+                                    pdMS_TO_TICKS(100));
+        for (int i = 0; i < count; i++) {
+            parse_rx_byte(bytes[i], frame, &used, &expected);
+        }
+    }
+}
 
 static esp_err_t send_frame_locked(uint8_t type, const void *payload,
                                    size_t payload_size)
@@ -92,10 +190,14 @@ esp_err_t link_tx_send_dsp_params(const protocol_dsp_params_t *params)
     TickType_t now = xTaskGetTickCount();
     TickType_t min_interval = pdMS_TO_TICKS(LINK_PARAMS_MIN_INTERVAL_MS);
     esp_err_t err = ESP_OK;
-    if (changed && (now - s_last_params_sent >= min_interval)) {
+    if ((changed || !s_params_sent) &&
+        (!s_params_sent || now - s_last_params_sent >= min_interval)) {
         err = send_frame_locked(PROTOCOL_UART_TYPE_DSP_PARAMS, params,
                                 sizeof(*params));
-        if (err == ESP_OK) s_last_params_sent = now;
+        if (err == ESP_OK) {
+            s_last_params_sent = now;
+            s_params_sent = true;
+        }
     }
     xSemaphoreGive(s_link_mutex);
     return err;
@@ -113,6 +215,7 @@ static void link_heartbeat_task(void *arg)
                                       &s_last_params,
                                       sizeof(s_last_params)) == ESP_OK) {
                     s_last_params_sent = xTaskGetTickCount();
+                    s_params_sent = true;
                 }
             }
             xSemaphoreGive(s_link_mutex);
@@ -135,12 +238,12 @@ esp_err_t link_tx_init(void)
     if (err != ESP_OK) {
         return err;
     }
-    err = uart_set_pin(LINK_UART, LINK_UART_TX_GPIO, UART_PIN_NO_CHANGE,
+    err = uart_set_pin(LINK_UART, LINK_UART_TX_GPIO, LINK_UART_RX_GPIO,
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
         return err;
     }
-    err = uart_driver_install(LINK_UART, LINK_UART_TX_BUFFER_SIZE,
+    err = uart_driver_install(LINK_UART, LINK_UART_RX_BUFFER_SIZE,
                               LINK_UART_TX_BUFFER_SIZE, 0,
                               NULL, 0);
     if (err != ESP_OK) {
@@ -154,15 +257,27 @@ esp_err_t link_tx_init(void)
         uart_driver_delete(LINK_UART);
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreate(link_heartbeat_task, "link_heartbeat", 2048, NULL, 1,
-                    NULL) != pdPASS) {
+    if (xTaskCreate(link_rx_task, "link_rx", 2048, NULL, 2,
+                    &s_link_rx_task_handle) != pdPASS) {
+        s_link_rx_task_handle = NULL;
         vSemaphoreDelete(s_link_mutex);
         s_link_mutex = NULL;
         s_link_ready = false;
         uart_driver_delete(LINK_UART);
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "UART2 rate link ready: TX GPIO %d at %d baud",
-             LINK_UART_TX_GPIO, PROTOCOL_UART_BAUD);
+    if (xTaskCreate(link_heartbeat_task, "link_heartbeat", 2048, NULL, 1,
+                    NULL) != pdPASS) {
+        vTaskDelete(s_link_rx_task_handle);
+        s_link_rx_task_handle = NULL;
+        s_link_ready = false;
+        vSemaphoreDelete(s_link_mutex);
+        s_link_mutex = NULL;
+        uart_driver_delete(LINK_UART);
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "UART2 full-duplex link ready: TX GPIO %d RX GPIO %d "
+             "at %d baud", LINK_UART_TX_GPIO, LINK_UART_RX_GPIO,
+             PROTOCOL_UART_BAUD);
     return ESP_OK;
 }
