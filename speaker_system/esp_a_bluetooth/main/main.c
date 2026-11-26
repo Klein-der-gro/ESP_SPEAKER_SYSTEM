@@ -1735,7 +1735,9 @@ static void ui_task(void *arg)
                     oled_text(10, 37, s_visualizer_fast ? "FAST" : "SMOOTH", 2);
                 }
             } else if (oled_page == 7) {
-                oled_text(8, 16, "CONNECTED BOXES", 1);
+                oled_text(8, 16, box_status_fresh
+                              ? "STATUS LINK: OK"
+                              : "STATUS LINK: LOST", 1);
                 if (box_status_fresh) {
                     char count_text[8];
                     snprintf(count_text, sizeof(count_text), "%u / 2",

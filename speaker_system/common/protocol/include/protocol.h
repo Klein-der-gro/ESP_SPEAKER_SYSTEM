@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FIRMWARE_VERSION_NAME "NR-4.0.26.11"
+#define FIRMWARE_VERSION_NAME "NR-5.0.26.11"
 #define PROTOCOL_FIRMWARE_VERSION UINT32_C(2)
 
 #define PROTOCOL_MAGIC UINT32_C(0x314B5053)

@@ -10,6 +10,10 @@ now sends DSP controls independently of Bluetooth audio; this update still
 needs end-to-end UART and Bluetooth verification. Physical sound output remains
 unverified.
 
+**Current source:** Firmware label `NR-5.0.26.11`. The ESP B UART parser
+frame-type fix is in source and was built successfully; it still needs to be
+flashed and verified on hardware.
+
 ## Physical pin map
 
 | Board | GPIO | Connect to / function |
@@ -166,7 +170,7 @@ An acceptance run should use a known stereo test track and verify:
 ## Important firmware settings
 
 - Shared definitions are in `common/protocol/include/protocol.h`.
-- Firmware label/version: `NR-3.0.26.11` / protocol version `2`.
+- Firmware label/version: `NR-5.0.26.11` / protocol version `2`.
 - ESP B access point: SSID `SPEAKER-NET`, example password
   `change-me-1234`, channel 1, hub address `192.168.4.1`, country `AT`.
   The password is public example text, not a secret.
@@ -177,9 +181,10 @@ An acceptance run should use a known stereo test track and verify:
   Connect ESP B GPIO 4 TX -> ESP A GPIO 4 RX and share GND. On ESP A's OLED
   home page, `L+` and `R+` mean ESP B recently received that role's UDP
   registration heartbeat; `L-` / `R-` mean it has not, or the UART status
-  frame is stale. Page 8 (`BOX STATUS`) displays the current connected-box
-  count and each role; `-- / 2` means the status frame is stale or unavailable.
-  Registration indicators do not confirm audio playback.
+  frame is stale. Page 8 (`BOX STATUS`) displays whether the status link is
+  fresh, the connected-box count, and each role; `-- / 2` means the status
+  frame is stale or unavailable. Registration indicators do not confirm audio
+  playback.
 - Audio is 16-bit stereo, 256 frames per packet. Each UDP audio datagram is
   1056 bytes total (32-byte header plus 1024-byte PCM payload). Audio uses
   UDP port 5004; box registration and clock sync use UDP port 5005.
@@ -220,7 +225,7 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 ## Configuration and safety
 
-- Version label: `NR-3.0.26.11`.
+- Version label: `NR-5.0.26.11`.
 - Hub SSID: `SPEAKER-NET`; example password: `change-me-1234`; hub IP:
   `192.168.4.1`; Wi-Fi country: `AT`.
 - The example password is public and must not be used as a personal secret.
@@ -241,6 +246,15 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 ## Verification completed
 
+- Fixed the ESP B UART frame parser to use `frame[0]` for frame type instead of
+  the payload-length byte. The ESP B project rebuilt successfully and produced
+  `build/esp_b_wifi_hub.bin`; the corrected firmware has not yet been flashed
+  or hardware-tested.
+- Bumped the shared firmware label to `NR-5.0.26.11`. Rebuilt ESP A, ESP B,
+  and the speaker-box project successfully with ESP-IDF 6.1.
+- Updated ESP A OLED page 8 to show `STATUS LINK: OK` or `STATUS LINK: LOST`
+  above the current LEFT/RIGHT registration statuses. The display change
+  compiled in the ESP A build; hardware display behavior is not yet verified.
 - ESP A, ESP B, and speaker-box projects each built successfully with ESP-IDF
   6.1.
 - ESP A, ESP B, and the box were rebuilt with full-duplex box-status reporting
@@ -315,6 +329,9 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 
 ## Not yet verified
 
+- ESP B's corrected UART parser has been built but not flashed or
+  hardware-verified. It must be flashed before `params=1 stale=0` can be
+  confirmed.
 - ESP A, ESP B, and the LEFT box have the latest firmware. The RIGHT box
   still needs it.
 - Physical sound output and complete Bluetooth-to-speaker playback were not

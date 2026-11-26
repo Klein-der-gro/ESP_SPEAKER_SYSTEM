@@ -4,7 +4,7 @@ This firmware targets four ESP32 boards. ESP A is the Bluetooth source and
 controller, ESP B is the Wi-Fi hub and shared-DSP processor, and one box
 firmware runs on LEFT and RIGHT speaker boards.
 
-The current firmware label is `NR-4.0.26.11`, and the protocol version is `2`.
+The current firmware label is `NR-5.0.26.11`, and the protocol version is `2`.
 The shared network and protocol settings are in
 [`common/protocol/include/protocol.h`](common/protocol/include/protocol.h).
 The example credentials are not secrets:
@@ -124,7 +124,10 @@ The second encoder changes the OLED page. The eight pages are:
 5. `VOCAL` - vocal boost, sensitivity, and extracted voice-band display.
 6. `BALANCE` - LEFT/CENTER/RIGHT balance.
 7. `SETUP` - presets, startup chime, and visualizer mode.
-8. `BOX STATUS` - current LEFT/RIGHT registration count.
+8. `BOX STATUS` - whether ESP B's status link is fresh, plus the current
+   LEFT/RIGHT box registration count and per-role status. `STATUS LINK: LOST`
+   means ESP A has not received a recent status frame; it does not prove that
+   ESP B itself is powered off. Registration does not confirm audio playback.
 
 ## Safety and wiring
 

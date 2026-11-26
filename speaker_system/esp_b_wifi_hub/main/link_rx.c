@@ -52,7 +52,7 @@ static bool valid_params(const protocol_dsp_params_t *params)
 
 static void handle_frame(const uint8_t *frame, uint8_t payload_size)
 {
-    if (frame[1] == PROTOCOL_UART_TYPE_RATE &&
+    if (frame[0] == PROTOCOL_UART_TYPE_RATE &&
         payload_size == PROTOCOL_UART_RATE_PAYLOAD_SIZE) {
         uint32_t rate = (uint32_t)frame[2] |
                         ((uint32_t)frame[3] << 8) |
@@ -61,7 +61,7 @@ static void handle_frame(const uint8_t *frame, uint8_t payload_size)
         if (rate == 44100U || rate == 48000U) {
             hub_set_sample_rate(rate);
         }
-    } else if (frame[1] == PROTOCOL_UART_TYPE_DSP_PARAMS &&
+    } else if (frame[0] == PROTOCOL_UART_TYPE_DSP_PARAMS &&
                payload_size == PROTOCOL_UART_DSP_PARAMS_PAYLOAD_SIZE) {
         protocol_dsp_params_t params;
         memcpy(&params, &frame[2], sizeof(params));
