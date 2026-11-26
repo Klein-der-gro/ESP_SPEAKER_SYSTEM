@@ -3,12 +3,12 @@
 **Last updated:** 2026-11-26  
 **Project:** Four-board ESP32 Bluetooth and multiroom speaker system  
 **Status:** ESP A, ESP B, and the LEFT box have been flashed. COM5 is currently
-on the LEFT box; monitoring from the box project confirms it boots, registers,
-and plays packets, but received PCM is exactly zero. Earlier ESP B diagnostics
-showed nonzero I2S input but zero post-DSP output because no DSP controls were
-arriving (`params=0 stale=1`). ESP A now sends DSP controls independently of
-Bluetooth audio; this update builds but has not yet been flashed or verified
-over UART. Physical sound output remains unverified.
+on the LEFT box; monitoring confirms that it boots and registers, but received
+PCM was exactly zero in the captured run. ESP B captured nonzero I2S input and
+zero post-DSP output while DSP controls were stale (`params=0 stale=1`). ESP A
+now sends DSP controls independently of Bluetooth audio; this update still
+needs end-to-end UART and Bluetooth verification. Physical sound output remains
+unverified.
 
 ## Physical pin map
 
@@ -39,6 +39,116 @@ wiring; some ESP32 modules reserve GPIO 16/17 for PSRAM. Keep I2S leads short.
 Whenever project code, configuration, or documentation changes, update this
 file in the same work session. Refresh the date, summarize the change and its
 validation, and keep the unverified items explicit.
+
+## Handoff checklist
+
+Before handing the project to a new operator or returning after a break:
+
+- Read this file and [`README.md`](README.md).
+- Verify that the source and flashed firmware use the same
+`FIRMWARE_VERSION_NAME` and protocol constants.
+- Confirm ESP A GPIO 17 -> ESP B GPIO 16, ESP B GPIO 4 -> ESP A GPIO 4, and
+common ground.
+- Confirm ESP A I2S GPIO 18/19/23 and ESP B I2S GPIO 18/19/23 share the same
+clock/data direction.
+- Confirm no amplifier is connected while testing raw ESP A DAC output.
+- Set the LEFT box GPIO 27 open/pulled high and the RIGHT box GPIO 27 to GND.
+- Flash ESP A, ESP B, LEFT, and RIGHT as separate ESP-IDF projects.
+- Perform a Bluetooth pairing check, a PCM-control check, and a physical DAC
+output check before leaving amplifiers connected.
+
+Do not mark the system complete based only on successful builds. Completion
+requires both monitor evidence and safe playback through the speaker hardware.
+
+## System data flow
+
+```text
+Bluetooth phone -> ESP A A2DP stream -> ESP A I2S task
+                                    -> 16-bit stereo I2S to ESP B
+ESP A UART2 -> sample rate/DSP settings -> ESP B UART receiver
+ESP B I2S receiver -> shared DSP -> UDP audio queue -> LEFT/RIGHT boxes
+ESP B control UDP -> box registration/clock sync -> ESP B
+ESP B box-status UART -> ESP A OLED
+```
+
+ESP A has two independent control paths: A2DP/AVRCP carries playback and
+metadata over Bluetooth, while UART2 carries sample rate and DSP settings.
+ESP B does not receive DSP settings through Bluetooth or Wi-Fi. A broken UART
+wire or baud/configuration mismatch causes the ESP B stale-control fail-safe
+and silent post-DSP audio even if Wi-Fi and I2S counters look healthy.
+
+Each box has another independent control path. UDP port 5005 carries
+registration heartbeats and NTP-style clock-sync requests, while UDP port 5004
+carries 1056-byte audio packets. Audio and clock/control traffic must reach
+the same ESP B address.
+
+## Packet and frame reference
+
+| Transport | From | To | Data |
+|---|---|---|---|
+| I2S | ESP A | ESP B | 16-bit stereo raw PCM |
+| UART2 | ESP A | ESP B | 44.1/48 kHz rate and DSP parameters |
+| UART2 | ESP B | ESP A | LEFT/RIGHT status byte once per second |
+| UDP 5005 | Boxes | ESP B | Hello, heartbeat, clock sync request |
+| UDP 5005 | ESP B | Boxes | Hello ACK, clock sync response |
+| UDP 5004 | ESP B | Box | 32-byte header plus 1024 PCM bytes |
+
+An audio packet has 256 stereo frames. The header contains protocol magic,
+type, flags, payload length, sequence number, sample rate, frame index, and
+hub timestamp. A 120 ms playout delay gives boxes a small UDP jitter buffer.
+The box reports packet loss and queue drops separately; both counters should
+be evaluated together.
+
+## Startup sequence
+
+1. ESP A initializes NVS, restores DSP settings, starts I2S and Bluetooth,
+ initializes UART2, and sends its current sample rate/settings.
+2. ESP B initializes NVS and the audio queue, starts Wi-Fi AP mode, UART,
+ I2S slave, UDP control, and UDP audio sender.
+3. A box boots with GPIO 27 selecting LEFT or RIGHT, joins `SPEAKER-NET`,
+ receives an IP, registers on UDP 5005, and starts I2S clock playback.
+4. ESP B forwards the registered role bits over UART once per second.
+5. ESP A pairs with the phone, receives PCM, and writes raw I2S without
+ requiring a box to play for the Bluetooth link to remain active.
+
+## Diagnostics and acceptance signals
+
+Use one ESP-IDF monitor project at a time so the ELF and COM port match the
+device being observed.
+
+### ESP A
+
+- `UART2 full-duplex link ready`
+- Bluetooth device name `ESP32-Speaker`
+- No UART frame-write errors
+- OLED status shows `L+` / `R+` only after ESP B status is received
+
+### ESP B
+
+- `AP up: SSID=SPEAKER-NET ... IP=192.168.4.1`
+- `I2S slave RX ready`
+- `UART2 full-duplex ready`
+- `Registered LEFT box` / `Registered RIGHT box`
+- Per-second `boxes=`, `packets/s=`, `queue_overruns=`, and `rate=`
+- Raw I2S and post-DSP `avg_abs`/`peak` should be nonzero when music plays
+- `params=1 stale=0` is required for valid DSP controls
+
+### LEFT and RIGHT boxes
+
+- `Speaker box ready, role=...`
+- `Connected to hub Wi-Fi`
+- `<ROLE> box registered with hub`
+- `registered=1`, no increasing queue drops, and `playing=1`
+- `pcm_avg_abs` and `pcm_peak` should be nonzero for a non-silent track
+
+An acceptance run should use a known stereo test track and verify:
+
+1. ESP B has both valid raw I2S and valid DSP controls.
+2. ESP B has zero or bounded queue overruns.
+3. Each box remains registered for at least several minutes.
+4. Left-only and right-only test content reaches the intended DAC channel.
+5. No late-packet, watchdog, reset, or I2S-write errors occur.
+6. Playback remains stable after Wi-Fi reconnection and a sample-rate change.
 
 ## Current architecture
 
