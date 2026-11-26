@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FIRMWARE_VERSION_NAME "MR-M0.2"
+#define FIRMWARE_VERSION_NAME "NR-3.0.26.11"
 #define PROTOCOL_FIRMWARE_VERSION UINT32_C(2)
 
 #define PROTOCOL_MAGIC UINT32_C(0x314B5053)

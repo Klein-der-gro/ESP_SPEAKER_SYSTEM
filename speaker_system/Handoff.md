@@ -115,6 +115,13 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
   6.1.
 - ESP B and speaker-box projects rebuilt successfully after moving Wi-Fi
   maximum TX-power configuration until after `esp_wifi_start()`.
+- ESP B rebuilt after the DSP optimization change. Its generated compiler
+  command was checked and includes `-O2` for `dsp.c`.
+- ESP B defaults to ESP-IDF performance optimization (`-O2`) instead of the
+  local debug optimization setting; the shared DSP component also explicitly
+  uses `-O2` so existing local debug `sdkconfig` files cannot leave this
+  performance-critical code at `-Og`. Shared DSP skips the vocal-band filter
+  chain while vocal mode is OFF.
 - `tools/udp_listener.py` passed Python syntax parsing and its `--help` check.
 - `git diff --check` completed without whitespace errors.
 - Pin assignments and protocol constants in this handoff were checked against
@@ -152,3 +159,8 @@ main file is `speaker_system/esp_a_bluetooth/main/main.c`.
 - **2026-11-26:** Fixed ESP-IDF Wi-Fi TX-power setup ordering in ESP B and box
   firmware. The API requires Wi-Fi to be started first; if optional TX-power
   tuning still fails, firmware logs a warning and continues at driver default.
+- **2026-11-26:** Addressed ESP B DSP budget warnings by selecting performance
+  compiler optimization in its tracked defaults and explicitly compiling the
+  DSP component with `-O2`; also skips unused vocal filters when vocal mode is
+  OFF. ESP B build passed and the generated `dsp.c` command contains `-O2`.
+  Flash and hardware timing verification are still required.

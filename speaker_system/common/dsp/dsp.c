@@ -352,24 +352,29 @@ void dsp_process(int16_t *stereo, size_t frames)
         left = biquad_process(&s_dsp.vocal_eq_state[0], &s_dsp.vocal_eq, left);
         right = biquad_process(&s_dsp.vocal_eq_state[1], &s_dsp.vocal_eq, right);
 
-        float mid = (left + right) * 0.5f;
-        float vocal_band = biquad_process(&s_dsp.vocal_hp_state[0],
-                                           &s_dsp.vocal_hp, mid);
-        vocal_band = biquad_process(&s_dsp.vocal_hp_state[1],
-                                    &s_dsp.vocal_hp, vocal_band);
-        vocal_band = biquad_process(&s_dsp.vocal_lp_state[0],
-                                    &s_dsp.vocal_lp, vocal_band);
-        vocal_band = biquad_process(&s_dsp.vocal_lp_state[1],
-                                    &s_dsp.vocal_lp, vocal_band);
+        if (s_dsp.vocal_mode == VOCAL_MODE_ISOLATE ||
+            s_dsp.vocal_mode == VOCAL_MODE_REMOVE) {
+            float mid = (left + right) * 0.5f;
+            float vocal_band = biquad_process(&s_dsp.vocal_hp_state[0],
+                                               &s_dsp.vocal_hp, mid);
+            vocal_band = biquad_process(&s_dsp.vocal_hp_state[1],
+                                        &s_dsp.vocal_hp, vocal_band);
+            vocal_band = biquad_process(&s_dsp.vocal_lp_state[0],
+                                        &s_dsp.vocal_lp, vocal_band);
+            vocal_band = biquad_process(&s_dsp.vocal_lp_state[1],
+                                        &s_dsp.vocal_lp, vocal_band);
 
-        if (s_dsp.vocal_mode == VOCAL_MODE_ISOLATE) {
-            left = vocal_band + (left - vocal_band) * VOCAL_BACKGROUND_LEVEL;
-            right = vocal_band + (right - vocal_band) * VOCAL_BACKGROUND_LEVEL;
-        } else if (s_dsp.vocal_mode == VOCAL_MODE_REMOVE) {
-            left = (left - vocal_band * VOCAL_REMOVE_AMOUNT) *
-                   VOCAL_REMOVE_LEVEL_COMP;
-            right = (right - vocal_band * VOCAL_REMOVE_AMOUNT) *
-                    VOCAL_REMOVE_LEVEL_COMP;
+            if (s_dsp.vocal_mode == VOCAL_MODE_ISOLATE) {
+                left = vocal_band +
+                       (left - vocal_band) * VOCAL_BACKGROUND_LEVEL;
+                right = vocal_band +
+                        (right - vocal_band) * VOCAL_BACKGROUND_LEVEL;
+            } else {
+                left = (left - vocal_band * VOCAL_REMOVE_AMOUNT) *
+                       VOCAL_REMOVE_LEVEL_COMP;
+                right = (right - vocal_band * VOCAL_REMOVE_AMOUNT) *
+                        VOCAL_REMOVE_LEVEL_COMP;
+            }
         }
 
         s_dsp.volume_gain = update_one_pole(s_dsp.volume_gain,
